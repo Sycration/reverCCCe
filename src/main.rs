@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, process::exit, time::Duration};
 
 use crate::types::{Agreement, ArticulationContainer, AvailableMajors, Course, Institution, ResultContainer, Year};
 use indicatif::ProgressIterator;
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut majors = HashMap::new();
 
-    for ag in agreements.iter().take(10).progress() {
+    for ag in agreements.iter().take(20).progress() {
         if ag.sending_year_ids.is_empty() {
             continue;
         }
@@ -75,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut classes = HashMap::new();
 
-    for art in majors.get(my_major).unwrap().iter().take(10).progress() {
+    for art in majors.get(my_major).unwrap().iter().take(20).progress() {
         let res_con = reqwest::get(format!("https://assist.org/api/articulation/Agreements?key={}", art.2))
             .await?
             .json::<ResultContainer>().await?;
@@ -87,16 +87,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut uni_class_name = String::new();
             match class.articulation.type_field.as_str() {
                 "Course" => {uni_class_name = class.articulation.course.unwrap().course_title;}
-                _ => {continue;}
-            }
-            let result_string = match class.articulation.type_field.as_str() {
-                "Course" => {
-                    if class.articulation.sending_articulation.items.is_empty() {
-                        continue;
+                "Series" => {uni_class_name = class.articulation.series.clone().unwrap().name.clone();
+                }
+                "Requirement" => {uni_class_name = class.articulation.requirement.unwrap().name;}
+                a @ _ => {
+                    eprintln!("Unhandled articulation type \"{a}\"");}
+            };
+            
+            let result_string = {
+                    let group_conj = class.articulation.sending_articulation.course_group_conjunctions.as_slice();
+                    let mut course_groups = class.articulation.sending_articulation.items.clone();
+                    course_groups.sort_by(|a,b|a.position.cmp(&b.position));
+                    let course_grp_strings = course_groups.iter().map(|cg| {
+                        let conj = format!(" {} ", cg.course_conjunction);
+                        let mut courses = cg.items.clone();
+                        let n_courses = courses.len();
+                        courses.sort_by(|a,b| a.position.cmp(&b.position));
+                        let mut st = courses.iter().map(|c|c.course_title.clone()).join(&conj);
+                        if n_courses > 1 {
+                            st = format!("[{}]", st);
+                        }
+                        st
+                    }).collect_vec();
+                    if course_grp_strings.len() == 1 {
+                        course_grp_strings[0].clone()
                     }
-                    class.articulation.sending_articulation.items[0].items[0].course_title.clone()
-                },
-                _ => {continue;}
+                    else {
+                        group_conj.iter().map(|gc|{
+                            let n = (gc.sending_course_group_begin_position..=gc.sending_course_group_end_position).count();
+                            let mut s = (gc.sending_course_group_begin_position..=gc.sending_course_group_end_position).map(|idx| {
+                                course_grp_strings[idx as usize].clone()
+                            }).join(format!(" {} ", gc.group_conjunction).as_str());
+                            if n > 1 {
+                                s = format!("({})", s);
+                            }
+                            s
+                        }).join(", ")
+                    }
+
+                
             };
             if classes.contains_key(&uni_class_name) {
                 let list: &mut Vec<(String, String)> = classes.get_mut(&uni_class_name).unwrap();
@@ -114,11 +143,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let classes_names = classes.iter().map(|c|c.0.clone()).collect_vec();
 
     let my_class = Select::new("Select a class", classes_names).prompt()?;
-    for class in classes.get(&my_class).unwrap() {
-        println!("{}:\t{}", class.0, class.1);
+    let classes = classes.get(&my_class).unwrap();
+    let uni_max_w = classes.iter().map(|x|x.0.len()).max().unwrap_or(0) + 1;
+    for class in classes.iter().map(|(a,b)| (format!("{a}:"), b)) {
+
+        
+        println!("{:w$}  {}", class.0, class.1, w=uni_max_w);
     }
 
-
+    std::io::stdin().read_line(&mut String::new()).unwrap();
 
     Ok(())
 }
